@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Outputs
+output/
+.caches/
+*.log
+
+# Sensitive
+.env
+*.key
+*.pem
+credentials*.json
+
+# Artifacts
+artifacts/bootstrap_*/
+archive/
+
+# HEAL-specific - Real customer data (DO NOT COMMIT)
+.checkpoints/
+.diagnostics/
+.claude/
+config/extracted_tickets*.yaml
+config/tickets_with_patterns.yaml
+config/patterns_report.json
+config/patterns/*.yaml
+config/patterns_backup_*/
+config/ungrouped/*.yaml
+config/failed_tickets.txt
+config/test_suites/*.yaml
+config/pattern_fix_config.yaml
+
+# Keep examples (override patterns above)
+!config/test_suites/*_example.yaml
+!config/*_example.yaml
+!config/*.example
+
+# Cache directories
+.mypy_cache/
+.ruff_cache/

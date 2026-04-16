@@ -1,0 +1,29 @@
+# Pattern Fix POC Configuration - Example
+# Copy this to pattern_fix_config.yaml and customize for your environment
+
+# Option 1: Use environment variables (recommended for flexibility)
+eval_root: ${LIGHTSPEED_EVAL_ROOT}
+okp_mcp_root: ${OKP_MCP_ROOT}
+lscore_deploy_root: ${LSCORE_DEPLOY_ROOT}
+
+# Option 2: Use relative paths (from /home/user/Work/ structure)
+# eval_root: ../../../lightspeed-core/lightspeed-evaluation
+# okp_mcp_root: ../../../okp-mcp
+# lscore_deploy_root: ../../../lscore-deploy
+
+# Option 3: Use absolute paths (less portable)
+# eval_root: /home/username/Work/lightspeed-core/lightspeed-evaluation
+# okp_mcp_root: /home/username/Work/okp-mcp
+# lscore_deploy_root: /home/username/Work/lscore-deploy
+
+# Pattern directories (relative to HEAL root)
+patterns_dir: config/patterns
+
+# Optimization parameters
+max_iterations: 10  # Max iterations for retrieval/prompt optimization
+answer_threshold: 0.90  # Minimum answer_correctness score to pass
+stability_runs: 3  # Number of runs for stability check
+
+# Agent options
+interactive: true  # Ask for confirmation before changes
+enable_llm_advisor: true  # Use LLM for AI-powered suggestions (requires Vertex AI)

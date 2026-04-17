@@ -109,6 +109,9 @@ class SolrMultiAgentSystem:
         Returns:
             Raw text response from Claude
         """
+        import tempfile
+        from pathlib import Path
+
         # CRITICAL: Temporarily unset GOOGLE_APPLICATION_CREDENTIALS
         # This is set for Gemini evaluations but conflicts with Claude ADC
         saved_google_creds = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
@@ -117,26 +120,44 @@ class SolrMultiAgentSystem:
             # Combine system and user prompts
             full_prompt = f"{system_prompt}\n\n---\n\n{user_prompt}"
 
-            # Use Claude Agent SDK with NO tools (just LLM response)
-            options = ClaudeAgentOptions(
-                model=self.model,
-                allowed_tools=[],  # Disable all tools - just get text response
-                permission_mode="auto",
-                max_turns=1,
-            )
+            # Create debug log file
+            log_file = Path("/tmp/solr_multi_agent_debug.log")
+            with open(log_file, "a") as log:
+                log.write(f"\n{'='*80}\n")
+                log.write(f"_call_llm() - model: {self.model}\n")
+                log.write(f"GOOGLE_APPLICATION_CREDENTIALS: {os.getenv('GOOGLE_APPLICATION_CREDENTIALS')} (should be None)\n")
+                log.write(f"Prompt length: {len(full_prompt)} chars\n")
+                log.write(f"{'='*80}\n")
 
-            # Collect response text
-            response_text = ""
-            try:
-                async for message in claude_query(prompt=full_prompt, options=options):
-                    if hasattr(message, "content"):
-                        for block in message.content:
-                            if hasattr(block, "text"):
-                                response_text += block.text
-            except Exception as e:
-                logger.error(f"Claude Agent SDK error: {e}")
-                logger.error(f"Error type: {type(e).__name__}")
-                raise RuntimeError(f"Failed to get LLM response via Claude Agent SDK: {e}") from e
+                # Use temp directory to avoid CLAUDE.md interference
+                # CRITICAL: Also disable MCP servers to avoid startup overhead
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    # Use Claude Agent SDK with NO tools (just LLM response)
+                    options = ClaudeAgentOptions(
+                        model=self.model,
+                        allowed_tools=[],  # Disable all tools - just get text response
+                        permission_mode="auto",
+                        max_turns=1,
+                        debug_stderr=log,  # Write debug output to log file
+                        cwd=tmpdir,  # Use temp directory
+                        disable_mcp=True,  # Don't start MCP servers
+                    )
+
+                    # Collect response text
+                    response_text = ""
+                    try:
+                        async for message in claude_query(prompt=full_prompt, options=options):
+                            if hasattr(message, "content"):
+                                for block in message.content:
+                                    if hasattr(block, "text"):
+                                        response_text += block.text
+                                        log.write(f"\n[Response block]: {block.text[:200]}...\n")
+                    except Exception as e:
+                        logger.error(f"Claude Agent SDK error: {e}")
+                        logger.error(f"Error type: {type(e).__name__}")
+                        logger.error(f"See debug log: {log_file}")
+                        log.write(f"\n❌ ERROR: {e}\n")
+                        raise RuntimeError(f"Failed to get LLM response via Claude Agent SDK: {e}") from e
 
             if not response_text:
                 raise RuntimeError("Claude Agent SDK returned empty response")
@@ -426,22 +447,28 @@ Return JSON only."""
         """
         system_prompt = """You are a senior software engineer who synthesizes theoretical advice with practical implementation.
 
-Your task: Create a PRACTICAL code change that:
+IMPORTANT: You are in READ-ONLY analysis mode. Do NOT edit any files or execute any commands.
+Your job is to analyze the inputs and suggest a code change by returning JSON ONLY.
+
+Your task: Recommend a PRACTICAL code change that:
 1. Incorporates Solr theory best practices
 2. Works within okp-mcp implementation constraints
 3. Fixes any bugs identified
 4. Has high confidence of improving metrics FOR THE ENTIRE PATTERN
 
-Return JSON with concrete code change:
+Return ONLY a JSON object with this structure (no file edits, no tool calls):
 {
-  "suggested_change": "Brief description of the change",
+  "suggested_change": "Brief description of the recommended change",
   "file_path": "src/okp_mcp/solr.py",
-  "old_code": "Exact code to replace (with line context)",
-  "new_code": "New code to insert",
+  "old_code": "Snippet of existing code that should be changed",
+  "new_code": "Recommended new code to replace it",
   "reasoning": "Why this change will help ALL tickets in the pattern",
   "confidence": 0.85,
   "risks": ["Potential risks or side effects"]
 }
+
+The old_code and new_code fields are DESCRIPTIVE SUGGESTIONS ONLY - they will NOT be applied automatically.
+Just provide your analysis and recommendation in JSON format.
 """
 
         # Summarize pattern metrics
@@ -480,14 +507,16 @@ Warnings:
 {chr(10).join(f'  - {w}' for w in code_analysis.warnings)}
 
 **Your Task:**
-Create a PRACTICAL code change that:
+Recommend a PRACTICAL code change that:
 1. Addresses the PATTERN-LEVEL root cause
 2. Applies Solr theory where possible
 3. Respects okp-mcp constraints
 4. Fixes bugs if found
 5. Is likely to improve F1/MRR for ALL {len(failing_tickets)} tickets
 
-Return JSON with exact old_code → new_code replacement."""
+IMPORTANT: Return ONLY JSON with your suggestion. Do NOT edit files or use tools.
+The JSON should include old_code and new_code fields describing your recommended change.
+These are suggestions that will be reviewed - they will NOT be applied automatically."""
 
         # Call Claude Agent SDK
         response_text = await self._call_llm(system_prompt, user_prompt)

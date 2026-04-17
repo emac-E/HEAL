@@ -338,6 +338,28 @@ class FixAgentDebugger:
             print(f"💡 This fix should improve retrieval for ALL {len(baseline.failing_tickets)} tickets in the pattern")
             print("="*80)
 
+            # Save suggestion to JSON for automatic application
+            suggestion_dir = Path(".diagnostics") / self.pattern_id
+            suggestion_dir.mkdir(parents=True, exist_ok=True)
+            suggestion_file = suggestion_dir / "suggestion.json"
+
+            suggestion_data = {
+                "pattern_id": self.pattern_id,
+                "suggested_change": suggestion.suggested_change,
+                "file_path": suggestion.file_path,
+                "old_code": suggestion.old_code,
+                "new_code": suggestion.new_code,
+                "reasoning": suggestion.reasoning,
+                "confidence": suggestion.confidence,
+                "risks": suggestion.risks,
+            }
+
+            with open(suggestion_file, "w") as f:
+                json.dump(suggestion_data, f, indent=2)
+
+            print(f"\n💾 Suggestion saved to: {suggestion_file}")
+            print(f"   Use './runners/eval_fix.sh {self.pattern_id} --apply' to apply automatically")
+
         except Exception as e:
             print(f"❌ Multi-agent optimization failed: {e}")
             import traceback

@@ -37,10 +37,11 @@ from heal.core.ticket_evaluation import PatternEvaluation, TicketEvaluation
 
 # Optional multi-agent system (requires claude-agent-sdk)
 try:
-    from heal.agents.solr_multi_agent import SolrMultiAgentSystem
+    from heal.agents.solr_multi_agent import SolrMultiAgentSystem, TicketData
     MULTI_AGENT_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
     SolrMultiAgentSystem = None
+    TicketData = None
     MULTI_AGENT_AVAILABLE = False
 
 # Force unbuffered output so prints show up immediately
@@ -1019,8 +1020,13 @@ class PatternFixAgent(OkpMcpAgent):
             # Get final metrics by running one more test
             result = self.diagnose_retrieval_only(ticket_id, iteration=max_iterations + 1)
 
-            final_f1 = result.url_f1 or 0.0
-            final_ctx_rel = result.context_relevance or 0.0
+            # Handle both single-ticket and pattern results
+            if isinstance(result, PatternEvaluationResult):
+                final_f1 = result.pattern_url_f1 or 0.0
+                final_ctx_rel = result.pattern_context_relevance or 0.0
+            else:
+                final_f1 = result.url_f1 or 0.0
+                final_ctx_rel = result.context_relevance or 0.0
 
             final_metrics = {
                 "url_f1": final_f1,
@@ -1135,36 +1141,42 @@ class PatternFixAgent(OkpMcpAgent):
         for iteration in range(1, max_iterations + 1):
             print(f"\n--- Pattern Iteration {iteration}/{max_iterations} ---\n")
 
-            # Get ONE Solr suggestion considering ALL failing tickets
-            # Use the first failing ticket as representative
-            representative_ticket = failing_tickets[0]
-            rep_query = ticket_queries[representative_ticket]["query"]
-            rep_urls = ticket_queries[representative_ticket]["expected_urls"]
-
-            # Get baseline for representative ticket
-            baseline_rep = baseline_result.per_ticket_results[representative_ticket]
-
             # Get suggestion using multi-agent system (if available)
             if self.multi_agent:
-                print("🤖 Consulting multi-agent system (Solr Expert + Code Expert)...\n")
+                print("🤖 Consulting multi-agent system for PATTERN analysis...\n")
+                print(f"   Analyzing ALL {len(failing_tickets)} failing tickets together\n")
 
                 try:
-                    # Multi-agent approach: Solr theory + code analysis
+                    # Build TicketData for ALL failing tickets
+                    failing_ticket_data = []
+                    for tid in failing_tickets:
+                        result = baseline_result.per_ticket_results[tid]
+                        query_info = ticket_queries[tid]
+
+                        ticket_data = TicketData(
+                            ticket_id=tid,
+                            query=query_info["query"],
+                            expected_urls=query_info["expected_urls"],
+                            retrieved_urls=result.retrieved_urls or [],
+                            metrics={
+                                "url_f1": result.url_f1 or 0.0,
+                                "mrr": result.mrr or 0.0,
+                            },
+                        )
+                        failing_ticket_data.append(ticket_data)
+
+                    # Multi-agent approach: Pattern-level analysis
                     synthesized = self._run_async_in_thread(
                         self.multi_agent.get_optimized_suggestion(
-                            query=rep_query,
-                            expected_urls=rep_urls,
-                            retrieved_urls=[],  # TODO: Extract from baseline
-                            metrics={
-                                "url_f1": baseline_rep.url_f1 or 0.0,
-                                "mrr": baseline_rep.mrr or 0.0,
-                            },
-                            solr_explain=None,  # TODO: Get from solr_analyzer
+                            pattern_id=self.pattern_id,
+                            failing_tickets=failing_ticket_data,
                         )
                     )
 
-                    print(f"🔍 Solr Expert + Code Expert Analysis Complete")
+                    print(f"🔍 Multi-Agent Pattern Analysis Complete")
+                    print(f"   Suggested Change: {synthesized.suggested_change}")
                     print(f"   Confidence: {synthesized.confidence:.0%}")
+                    print(f"   Affects: ALL {len(failing_tickets)} tickets in pattern")
                     if synthesized.risks:
                         print(f"   Risks: {', '.join(synthesized.risks[:2])}")
                     print()
@@ -1427,17 +1439,25 @@ class PatternFixAgent(OkpMcpAgent):
                 # MUST use full evaluation (need to see answer quality)
                 result = self.diagnose(ticket_id, use_existing=False)
 
-                if result.answer_correctness and result.answer_correctness > current_ans_corr:
-                    print(
-                        f"✅ Improved! Answer: {current_ans_corr:.2f} → {result.answer_correctness:.2f}"
-                    )
-                    current_ans_corr = result.answer_correctness
+                # Handle both single-ticket and pattern results
+                if isinstance(result, PatternEvaluationResult):
+                    answer_corr = result.pattern_answer_correctness or 0.0
+                    faithful = result.pattern_faithfulness or 0.0
+                else:
+                    answer_corr = result.answer_correctness or 0.0
+                    faithful = result.faithfulness or 0.0
 
-                if result.faithfulness and result.faithfulness > current_faithful:
+                if answer_corr and answer_corr > current_ans_corr:
                     print(
-                        f"✅ Improved! Faithfulness: {current_faithful:.2f} → {result.faithfulness:.2f}"
+                        f"✅ Improved! Answer: {current_ans_corr:.2f} → {answer_corr:.2f}"
                     )
-                    current_faithful = result.faithfulness
+                    current_ans_corr = answer_corr
+
+                if faithful and faithful > current_faithful:
+                    print(
+                        f"✅ Improved! Faithfulness: {current_faithful:.2f} → {faithful:.2f}"
+                    )
+                    current_faithful = faithful
 
                 # Early exit if good enough
                 if current_ans_corr > 0.90 and current_faithful > 0.8:
@@ -1548,8 +1568,13 @@ class PatternFixAgent(OkpMcpAgent):
             # Run full diagnosis with response generation (multiple runs for stability)
             result = self.diagnose(ticket_id, use_existing=False, runs=stability_runs)
 
-            answer_correct = result.answer_correctness or 0.0
-            faithful = result.faithfulness or 0.0
+            # Handle both single-ticket and pattern results
+            if isinstance(result, PatternEvaluationResult):
+                answer_correct = result.pattern_answer_correctness or 0.0
+                faithful = result.pattern_faithfulness or 0.0
+            else:
+                answer_correct = result.answer_correctness or 0.0
+                faithful = result.faithfulness or 0.0
 
             print("\n📊 Answer Metrics:")
             print(f"   Answer Correctness: {answer_correct:.2f} (avg of {result.num_runs} runs)")
@@ -1652,9 +1677,15 @@ class PatternFixAgent(OkpMcpAgent):
                 pattern_eval.tickets[ticket_id] = ticket_eval
 
             # Check overall averaged metrics
-            answer_correct = result.answer_correctness or 0.0
-            faithful = result.faithfulness or 0.0
-            url_f1 = result.url_f1 or 0.0
+            # Handle both single-ticket and pattern results
+            if isinstance(result, PatternEvaluationResult):
+                answer_correct = result.pattern_answer_correctness or 0.0
+                faithful = result.pattern_faithfulness or 0.0
+                url_f1 = result.pattern_url_f1 or 0.0
+            else:
+                answer_correct = result.answer_correctness or 0.0
+                faithful = result.faithfulness or 0.0
+                url_f1 = result.url_f1 or 0.0
 
             print("\n📊 Final Validation Metrics (Pattern Average):")
             print(f"   Answer Correctness: {answer_correct:.2f} (avg of {result.num_runs} runs)")
@@ -1887,8 +1918,13 @@ class PatternFixAgent(OkpMcpAgent):
                 print(f"\n   Run {i}/{num_runs}...")
                 result = self.diagnose(ticket_id, use_existing=False)
 
-                answer_correct = result.answer_correctness or 0.0
-                faithful = result.faithfulness or 0.0
+                # Handle both single-ticket and pattern results
+                if isinstance(result, PatternEvaluationResult):
+                    answer_correct = result.pattern_answer_correctness or 0.0
+                    faithful = result.pattern_faithfulness or 0.0
+                else:
+                    answer_correct = result.answer_correctness or 0.0
+                    faithful = result.faithfulness or 0.0
 
                 runs.append(
                     {
